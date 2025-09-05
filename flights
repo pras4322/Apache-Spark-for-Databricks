@@ -1,0 +1,98 @@
+# Example using flight data with Databricks PySpark.
+# While learning Spark code, I realized it’s easy to focus only on steps and formulas
+# and miss the bigger picture of what a data engineer does. 
+# Before coding, always understand the tables you’re working with and the business 
+# problem you’re solving. This gives you a blueprint for the calculations you need. 
+# After loading data, spend time exploring and thinking about what insights or metrics 
+# you want to produce—beyond what’s in the lessons. That’s how you’ll really grow.
+
+#in databricks you create a dataframe first that you will keep manupulating until your desired result
+#spark uses memory for its calculations hence creating new dataframes does not take disc space
+
+#how a table is created into dataframe
+flights_df = spark.read.table("retail.default.flights")
+display(flights_df)
+
+#its good practice to remove columns you dont need for visibility and keeping your table structure concise
+flights_new_df = flights_df.select(
+    "Year", "Month", "DayofMonth", "DepTime", "CRSDepTime",
+    "ArrTime", "CRSArrTime", "FlightNum", "TailNum"
+)
+
+#i import functions as I go. I donot prefer the * method as it doesnot provide opportunity to learn
+from pyspark.sql.functions import col, when, sum
+
+#in spark you will need to know and take care of nulls ASAP
+flights_nulls_per_column_df = flights_new_df.select(
+    sum(when(col("DepTime").isNull(), 1).otherwise(0)).alias("DepTime_nulls"),
+    sum(when(col("CRSDepTime").isNull(), 1).otherwise(0)).alias("CRSDepTime_nulls"),
+    sum(when(col("ArrTime").isNull(), 1).otherwise(0)).alias("ArrTime_nulls"),
+    sum(when(col("FlightNum").isNull(), 1).otherwise(0)).alias("FlightNum_nulls")
+)
+
+#this code drops all rows with nulls in it. probably not good idea to use at work but just learning here
+flights_w_no_nulls_df = flights_new_df.na.drop(
+    subset=["ArrTime", "CRSDepTime", "CRSArrTime", "FlightNum", "TailNum", "DepTime"]
+)
+
+display(flights_w_no_nulls_df.limit(10))
+from pyspark.sql.functions import col
+
+display(flights_calculations_df.select("CRSDepTime", "DepTime", "Deptime_Cal", "CRSArrTime", "ArrTime", "Arrtime_Cal").limit(10))
+from pyspark.sql.functions import col
+
+#obvious calculation step for flight delats
+flights_calculations_df = flights_w_no_nulls_df \
+    .withColumn("Deptime_Cal", col("CRSDepTime") - col("DepTime")) \
+    .withColumn("Arrtime_Cal", col("CRSArrTime") - col("ArrTime"))
+
+display(flights_calculations_df.select("CRSDepTime", "DepTime", "Deptime_Cal", "CRSArrTime", "ArrTime", "Arrtime_Cal").limit(10))
+from pyspark.sql.functions import col, when
+
+flights_labelling_df = flights_calculations_df.withColumn(
+    "DepDelay",
+    when((col("DepTime_Cal") > 0) & (col("DepTime_Cal") <= 30), "SlightDelay")
+    .when((col("DepTime_Cal") > 30) & (col("DepTime_Cal") < 120), "ModerateDelay")
+    .when(col("DepTime_Cal") > 120, "MajorDelay")
+    .otherwise("On Time")
+)
+
+display(flights_labelling_df.select("DepTime_Cal", "DepDelay").limit(10))
+from pyspark.sql.functions import format_string
+
+count_of_categories_df = flights_labelling_df.groupBy("DepDelay").count()
+
+# Format the 'count' column with commas
+count_of_categories_df = count_of_categories_df.withColumn(
+    "Formatted_Count", format_string("%,d", count_of_categories_df["count"])
+)
+
+display(count_of_categories_df.select("DepDelay", "Formatted_Count"))
+from pyspark.sql.functions import mean, stddev
+
+flights_labelling_df.groupBy("DepDelay") \
+    .agg(
+        mean("DepTime_Cal").alias("Mean_DepTime"),
+        stddev("DepTime_Cal").alias("StdDev_DepTime")
+    ).show()
+
+#lets calculate the z-score in a pandas series vectorized form. What this means - pandas series does the calculations by selecting chunks of values froma row. vectorized just means several numbers from a column
+
+from pyspark.sql.functions import pandas_udf
+
+#@pandas_udf("double")  #this tells readers that it is pandas udf and the answer will be in double type
+#def z_score(difference):
+#    mean = difference.mean()
+#    std = difference.std()
+#    return (difference - mean) / std
+
+#so you will notice how below ihave used banana. Becaseu we are just defining the formula below. The banana just means that it can be a series of numbers since we are using pandas series vectorized udf.
+@pandas_udf("double")  #this tells readers that it is pandas udf and the answer will be in double type
+def z_score(banana):
+    mean = banana.mean()
+    std = banana.std()
+    return (banana - mean) / std
+
+#it is here that we finally use it.
+dataframe_w_z_score_df = lateness_description_df.withColumn("z_score_delay", z_score(col("Difference")))
+display(dataframe_w_z_score_df)     
